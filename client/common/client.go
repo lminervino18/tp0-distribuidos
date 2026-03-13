@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/op/go-logging"
@@ -52,6 +55,26 @@ func (c *Client) createClientSocket() error {
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
+	// Canal para recibir señales del sistema operativo
+	sigChan := make(chan os.Signal, 1)
+	// Registrar SIGTERM en el canal para graceful shutdown
+	signal.Notify(sigChan, syscall.SIGTERM)
+
+	// Canal para notificar al loop principal que debe terminar
+	stopChan := make(chan struct{})
+
+	// Goroutine que espera SIGTERM en paralelo al loop principal
+	go func() {
+		<-sigChan // bloquea hasta recibir SIGTERM
+		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
+		if c.conn != nil {
+			c.conn.Close()
+			log.Infof("action: close_connection | result: success | client_id: %v", c.config.ID)
+		}
+		// Notifica al loop principal para interrumpir el sleep
+		close(stopChan)
+	}()
+
 	// There is an autoincremental msgID to identify every message sent
 	// Messages if the message amount threshold has not been surpassed
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
@@ -82,8 +105,14 @@ func (c *Client) StartClientLoop() {
 		)
 
 		// Wait a time between sending one message and the next one
-		time.Sleep(c.config.LoopPeriod)
-
+		// Usa select para poder interrumpir el sleep si llega SIGTERM
+		select {
+		case <-time.After(c.config.LoopPeriod):
+			// tiempo normal de espera
+		case <-stopChan:
+			// llegó SIGTERM, terminar el loop limpiamente
+			return
+		}
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
 }
