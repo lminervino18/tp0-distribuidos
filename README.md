@@ -1,15 +1,15 @@
-## Ejercicio 2
+## Ejercicio 3
 
 ### Cómo ejecutar
-Generar el compose y levantar el sistema:
+Levantar solo el servidor (sin clientes, no afectan pero no son necesarios):
 ```bash
-./generar-compose.sh docker-compose-dev.yaml 5
+./generar-compose.sh docker-compose-dev.yaml 0
 make docker-compose-up
 ```
 
-Ver logs:
+Ejecutar el script de validación:
 ```bash
-make docker-compose-logs
+./validar-echo-server.sh
 ```
 
 Bajar el sistema:
@@ -17,18 +17,5 @@ Bajar el sistema:
 make docker-compose-down
 ```
 
-### Cómo verificar
-Modificar algún valor en `client/config.yaml` o `server/config.ini` (por ejemplo cambiar `loop.amount` a 2) y reiniciar sin reconstruir:
-```bash
-make docker-compose-down
-docker compose -f docker-compose-dev.yaml up -d
-make docker-compose-logs
-```
-
-No hacemos make docker-compose-up ya que esto hace build internamente
-Si los cambios se reflejan sin haber ejecutado `docker build`, el bind mount funciona correctamente.
-
 ### Implementación
-Los archivos de configuración (`config.ini` del servidor y `config.yaml` del cliente) son inyectados en los containers mediante bind mounts definidos en el docker-compose generado. Esto permite modificar la configuración sin reconstruir las imágenes.
-
-El `config.ini` fue excluido de la imagen del servidor mediante un `.dockerignore`. En el cliente se eliminó la línea `COPY` del config en el Dockerfile.
+El script `validar-echo-server.sh` corre netcat dentro de un container temporal de `busybox` (que ya tiene netcat instalado) conectado a la red `tp0_testing_net`, sin exponer puertos al host. Envía un mensaje al servidor y compara la respuesta. Si son iguales imprime `result: success`, caso contrario `result: fail`.
