@@ -3,3 +3,6 @@
 
 # Executables
 bin/
+
+# Compose generado por el script
+docker-compose-dev.yaml
