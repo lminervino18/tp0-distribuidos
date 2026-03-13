@@ -1,21 +1,29 @@
-## Ejercicio 3
+## Ejercicio 4
 
 ### Cómo ejecutar
-Levantar solo el servidor (sin clientes, no afectan pero no son necesarios):
 ```bash
-./generar-compose.sh docker-compose-dev.yaml 0
+./generar-compose.sh docker-compose-dev.yaml 5
 make docker-compose-up
 ```
 
-Ejecutar el script de validación:
-```bash
-./validar-echo-server.sh
-```
-
-Bajar el sistema:
+Para probar el graceful shutdown mientras los clientes corren:
 ```bash
 make docker-compose-down
 ```
 
+### Cómo verificar
+Levantar el sistema y bajar antes de que los clientes terminen solos. Se debe observar en los logs:
+```
+client1 | action: receive_sigterm | result: success | client_id: 1
+client1 | action: close_connection | result: success | client_id: 1
+client1 exited with code 0
+server  | action: receive_sigterm | result: success
+server  | action: close_server_socket | result: success
+server  | action: server_shutdown | result: success
+server exited with code 0
+```
+
 ### Implementación
-El script `validar-echo-server.sh` corre netcat dentro de un container temporal de `busybox` (que ya tiene netcat instalado) conectado a la red `tp0_testing_net`, sin exponer puertos al host. Envía un mensaje al servidor y compara la respuesta. Si son iguales imprime `result: success`, caso contrario `result: fail`.
+**Servidor (Python):** se registra un handler para SIGTERM con `signal.signal()`. Al recibirlo, cierra el server socket y termina el loop principal. El `accept()` bloqueado lanza `OSError` que es catcheada correctamente.
+
+**Cliente (Go):** se crea un channel `sigChan` que recibe SIGTERM. Una goroutine escucha en paralelo al loop principal. Al recibir SIGTERM cierra la conexión activa y notifica al loop mediante un `stopChan`. El loop usa `select` para poder interrumpir el `time.Sleep` inmediatamente en lugar de esperar que Docker mande SIGKILL.
