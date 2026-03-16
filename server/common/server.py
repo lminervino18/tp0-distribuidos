@@ -149,7 +149,7 @@ class Server:
                 logging.info('action: close_client_socket | result: success')
         else:
             # Guardar conexión para responder cuando el sorteo esté listo
-            logging.info(f'action: consulta_ganadores | result: waiting | agency_id: {agency_id}')
+            logging.info(f'action: consulta_ganadores | result: in_progress | agency_id: {agency_id}')
             self._pending_queries[agency_id] = client_sock
 
     def __get_winners(self, agency_id):
