@@ -32,13 +32,9 @@ for i in range(1, num_clients + 1):
     entrypoint: /client
     environment:
       - CLI_ID={i}
-      - NOMBRE=Santiago Lionel
-      - APELLIDO=Lorca
-      - DOCUMENTO=3090446{i}
-      - NACIMIENTO=1999-03-17
-      - NUMERO=757{i}
     volumes:
       - ./client/config.yaml:/config.yaml
+      - ./.data/agency-{i}.csv:/data/agency-{i}.csv
     networks:
       - testing_net
     depends_on:

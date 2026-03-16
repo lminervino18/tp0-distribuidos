@@ -37,6 +37,7 @@ func InitConfig() (*viper.Viper, error) {
 	v.BindEnv("loop", "period")
 	v.BindEnv("loop", "amount")
 	v.BindEnv("log", "level")
+	v.BindEnv("batch", "maxAmount")
 
 	// Try to read configuration from config file. If config file
 	// does not exists then ReadInConfig will fail but configuration
@@ -89,22 +90,6 @@ func PrintConfig(v *viper.Viper) {
 	)
 }
 
-// initBet lee las variables de entorno de la apuesta y construye una Bet
-func initBet(agencyID string) (*common.Bet, error) {
-	firstName := os.Getenv("NOMBRE")
-	lastName := os.Getenv("APELLIDO")
-	document := os.Getenv("DOCUMENTO")
-	birthdate := os.Getenv("NACIMIENTO")
-	number := os.Getenv("NUMERO")
-
-	// Verificar que todos los campos estén presentes
-	if firstName == "" || lastName == "" || document == "" || birthdate == "" || number == "" {
-		return nil, errors.New("faltan variables de entorno para la apuesta")
-	}
-
-	return common.NewBet(agencyID, firstName, lastName, document, birthdate, number), nil
-}
-
 func main() {
 	v, err := InitConfig()
 	if err != nil {
@@ -119,18 +104,16 @@ func main() {
 	PrintConfig(v)
 
 	clientConfig := common.ClientConfig{
-		ServerAddress: v.GetString("server.address"),
-		ID:            v.GetString("id"),
-		LoopAmount:    v.GetInt("loop.amount"),
-		LoopPeriod:    v.GetDuration("loop.period"),
+		ServerAddress:  v.GetString("server.address"),
+		ID:             v.GetString("id"),
+		LoopAmount:     v.GetInt("loop.amount"),
+		LoopPeriod:     v.GetDuration("loop.period"),
+		BatchMaxAmount: v.GetInt("batch.maxAmount"),
 	}
 
-	// Construir la apuesta desde las variables de entorno
-	bet, err := initBet(v.GetString("id"))
-	if err != nil {
-		log.Criticalf("action: init_bet | result: fail | error: %v", err)
-	}
+	// Path del CSV de la agencia — inyectado como volumen en el container
+	csvPath := fmt.Sprintf("/data/agency-%s.csv", v.GetString("id"))
 
 	client := common.NewClient(clientConfig)
-	client.StartClientLoop(bet)
+	client.StartClientLoop(csvPath)
 }
