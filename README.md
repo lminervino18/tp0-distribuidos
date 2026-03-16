@@ -1,29 +1,46 @@
-## Ejercicio 4
+## Ejercicio 5
 
 ### Cómo ejecutar
 ```bash
 ./generar-compose.sh docker-compose-dev.yaml 5
 make docker-compose-up
+make docker-compose-logs
 ```
 
-Para probar el graceful shutdown mientras los clientes corren:
+Bajar el sistema:
 ```bash
 make docker-compose-down
 ```
 
 ### Cómo verificar
-Levantar el sistema y bajar antes de que los clientes terminen solos. Se debe observar en los logs:
+Se debe observar en los logs del cliente:
 ```
-client1 | action: receive_sigterm | result: success | client_id: 1
-client1 | action: close_connection | result: success | client_id: 1
-client1 exited with code 0
-server  | action: receive_sigterm | result: success
-server  | action: close_server_socket | result: success
-server  | action: server_shutdown | result: success
-server exited with code 0
+client1 | action: apuesta_enviada | result: success | dni: 30904461 | numero: 7571
 ```
+
+Y en los del servidor:
+```
+server | action: apuesta_almacenada | result: success | dni: 30904461 | numero: 7571
+```
+
+### Protocolo de comunicación
+Se implementó un protocolo binario propio con el siguiente formato:
+```
+[2 bytes big-endian: largo del mensaje][mensaje en texto plano]
+```
+
+Los campos de la apuesta se serializan separados por `|`:
+```
+agency|first_name|last_name|document|birthdate|number
+```
+
+El mismo formato se usa para la confirmación del servidor. Se evitan short-read y short-write mediante loops que garantizan la lectura/escritura de exactamente N bytes.
 
 ### Implementación
-**Servidor (Python):** se registra un handler para SIGTERM con `signal.signal()`. Al recibirlo, cierra el server socket y termina el loop principal. El `accept()` bloqueado lanza `OSError` que es catcheada correctamente.
+La lógica se modularizó en tres capas:
 
-**Cliente (Go):** se crea un channel `sigChan` que recibe SIGTERM. Una goroutine escucha en paralelo al loop principal. Al recibir SIGTERM cierra la conexión activa y notifica al loop mediante un `stopChan`. El loop usa `select` para poder interrumpir el `time.Sleep` inmediatamente en lugar de esperar que Docker mande SIGKILL.
+**Modelo de dominio:** `bet.go` (cliente) y `utils.py` (servidor) contienen el struct/clase `Bet` sin lógica de comunicación.
+
+**Capa de comunicación:** `protocol.go` (cliente) y `protocol.py` (servidor) contienen la serialización, `sendAll`/`recvAll` y el protocolo de longitud prefija.
+
+**Lógica de negocio:** `client.go` y `server.py` orquestan el flujo usando las capas anteriores.
