@@ -4,9 +4,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
 )
 
 const SEPARATOR = "|"
+
+// Tipos de mensaje del protocolo
+const (
+	MSG_BATCH = uint8(0x01) // batch de apuestas
+	MSG_FIN   = uint8(0x02) // notificación de fin de envío
+	MSG_QUERY = uint8(0x03) // consulta de ganadores
+)
 
 // serialize convierte una Bet a bytes con el formato del protocolo:
 // los campos separados por '|'
@@ -49,8 +57,13 @@ func recvAll(conn net.Conn, n int) ([]byte, error) {
 	return buf, nil
 }
 
+// sendMessageType envía el byte de tipo de mensaje
+func sendMessageType(conn net.Conn, msgType uint8) error {
+	return sendAll(conn, []byte{msgType})
+}
+
 // SendBet serializa y envía una apuesta al servidor
-// Formato: [2 bytes: largo][datos]
+// Formato: [2 bytes: largo][datos separados por '|']
 func SendBet(conn net.Conn, bet *Bet) error {
 	data := serialize(bet)
 
@@ -61,33 +74,17 @@ func SendBet(conn net.Conn, bet *Bet) error {
 		return err
 	}
 
-	// Enviar los datos
 	return sendAll(conn, data)
 }
 
-// ReceiveConfirmation lee la confirmación del servidor
-// Formato: [2 bytes: largo][texto]
-func ReceiveConfirmation(conn net.Conn) (string, error) {
-	// Leer header con el largo
-	header, err := recvAll(conn, 2)
-	if err != nil {
-		return "", err
-	}
-
-	// Leer exactamente los bytes indicados en el header
-	length := int(binary.BigEndian.Uint16(header))
-	data, err := recvAll(conn, length)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
-}
-
 // SendBatch envía un batch de apuestas al servidor
-// Formato: [2 bytes: cantidad de apuestas][apuesta1][apuesta2]...[apuestaN]
+// Formato: [1 byte: MSG_BATCH][2 bytes: cantidad][apuesta1]...[apuestaN]
 func SendBatch(conn net.Conn, bets []*Bet) error {
-	// Enviar header con la cantidad de apuestas en 2 bytes big-endian
+	if err := sendMessageType(conn, MSG_BATCH); err != nil {
+		return err
+	}
+
+	// Enviar cantidad de apuestas en 2 bytes big-endian
 	header := make([]byte, 2)
 	binary.BigEndian.PutUint16(header, uint16(len(bets)))
 	if err := sendAll(conn, header); err != nil {
@@ -106,5 +103,68 @@ func SendBatch(conn net.Conn, bets []*Bet) error {
 // ReceiveBatchConfirmation lee la confirmación del servidor para un batch
 // Formato: [2 bytes: largo][texto]
 func ReceiveBatchConfirmation(conn net.Conn) (string, error) {
-	return ReceiveConfirmation(conn)
+	header, err := recvAll(conn, 2)
+	if err != nil {
+		return "", err
+	}
+	length := int(binary.BigEndian.Uint16(header))
+	data, err := recvAll(conn, length)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// SendFin notifica al servidor que la agencia terminó de enviar apuestas
+// Formato: [1 byte: MSG_FIN][2 bytes: agency_id]
+func SendFin(conn net.Conn, agencyID string) error {
+	if err := sendMessageType(conn, MSG_FIN); err != nil {
+		return err
+	}
+
+	// Enviar agency_id en 2 bytes big-endian
+	id := make([]byte, 2)
+	agencyIDInt := uint16(0)
+	fmt.Sscanf(agencyID, "%d", &agencyIDInt)
+	binary.BigEndian.PutUint16(id, agencyIDInt)
+	return sendAll(conn, id)
+}
+
+// SendQuery consulta al servidor los ganadores de la agencia
+// Formato: [1 byte: MSG_QUERY][2 bytes: agency_id]
+func SendQuery(conn net.Conn, agencyID string) error {
+	if err := sendMessageType(conn, MSG_QUERY); err != nil {
+		return err
+	}
+
+	// Enviar agency_id en 2 bytes big-endian
+	id := make([]byte, 2)
+	agencyIDInt := uint16(0)
+	fmt.Sscanf(agencyID, "%d", &agencyIDInt)
+	binary.BigEndian.PutUint16(id, agencyIDInt)
+	return sendAll(conn, id)
+}
+
+// ReceiveWinners lee la lista de DNIs ganadores del servidor
+// Formato: [2 bytes: largo total][DNI1|DNI2|...]
+func ReceiveWinners(conn net.Conn) ([]string, error) {
+	// Leer largo total del payload
+	header, err := recvAll(conn, 2)
+	if err != nil {
+		return nil, err
+	}
+	length := int(binary.BigEndian.Uint16(header))
+
+	// Si no hay ganadores retornar lista vacía
+	if length == 0 {
+		return []string{}, nil
+	}
+
+	// Leer exactamente los bytes indicados y splitear por '|'
+	data, err := recvAll(conn, length)
+	if err != nil {
+		return nil, err
+	}
+
+	return strings.Split(string(data), SEPARATOR), nil
 }
