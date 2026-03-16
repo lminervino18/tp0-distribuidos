@@ -1,107 +1,84 @@
-import struct
+import socket
 import logging
+import signal
 
-SEPARATOR = "|"
-HEADER_SIZE = 2
-
-# Tipos de mensaje del protocolo
-MSG_BATCH = 0x01  # batch de apuestas
-MSG_FIN   = 0x02  # notificación de fin de envío
-MSG_QUERY = 0x03  # consulta de ganadores
+from common.protocol import receive_batch, send_confirmation
+from common.utils import Bet, store_bets
 
 
-def recv_all(sock, n):
-    """Lee exactamente n bytes del socket evitando short-read"""
-    data = b""
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            raise OSError("Conexión cerrada por el cliente")
-        data += chunk
-    return data
+class Server:
+    def __init__(self, port, listen_backlog):
+        # Initialize server socket
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_socket.bind(('', port))
+        self._server_socket.listen(listen_backlog)
+        self._running = True
 
+        # Registrar handler de SIGTERM para graceful shutdown
+        signal.signal(signal.SIGTERM, self.__handle_sigterm)
 
-def send_all(sock, data):
-    """Envía exactamente todos los bytes evitando short-write"""
-    total_sent = 0
-    while total_sent < len(data):
-        sent = sock.send(data[total_sent:])
-        if sent == 0:
-            raise OSError("Conexión cerrada por el cliente")
-        total_sent += sent
+    def __handle_sigterm(self, sig, frame):
+        """
+        Handle SIGTERM signal for graceful shutdown.
+        Closes the server socket and stops the main loop.
+        """
+        logging.info('action: receive_sigterm | result: success')
+        self._running = False
+        self._server_socket.close()
+        logging.info('action: close_server_socket | result: success')
 
+    def run(self):
+        """
+        Server loop
 
-def receive_message_type(sock):
-    """
-    Lee el byte de tipo de mensaje.
-    Retorna el tipo como entero (MSG_BATCH, MSG_FIN o MSG_QUERY)
-    """
-    data = recv_all(sock, 1)
-    return struct.unpack("!B", data)[0]
+        Accepts new connections and handles each client.
+        After client communication finishes, server starts to accept new connections again.
+        """
+        while self._running:
+            try:
+                client_sock = self.__accept_new_connection()
+                self.__handle_client_connection(client_sock)
+            except OSError as e:
+                if self._running:
+                    logging.error(f'action: accept_connections | result: fail | error: {e}')
 
+        logging.info('action: server_shutdown | result: success')
 
-def receive_bet(sock):
-    """
-    Recibe una apuesta del cliente.
-    Formato: [2 bytes: largo][datos separados por '|']
-    Retorna una lista con los campos: [agency, first_name, last_name, document, birthdate, number]
-    """
-    # Leer header con el largo del mensaje
-    header = recv_all(sock, HEADER_SIZE)
-    length = struct.unpack("!H", header)[0]
+    def __handle_client_connection(self, client_sock):
+        """
+        Read batch of bets from client, store them and send confirmation.
 
-    # Leer exactamente los bytes indicados en el header
-    data = recv_all(sock, length)
-    return data.decode("utf-8").split(SEPARATOR)
+        If a problem arises in the communication with the client, the
+        client socket will also be closed
+        """
+        try:
+            # Recibir el batch de apuestas usando el protocolo
+            fields_list = receive_batch(client_sock)
+            bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
 
+            # Persistir todas las apuestas del batch
+            store_bets(bets)
+            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
 
-def receive_batch(sock):
-    """
-    Recibe un batch de apuestas del cliente.
-    Formato: [2 bytes: cantidad][apuesta1][apuesta2]...[apuestaN]
-    Retorna una lista de listas con los campos de cada apuesta
-    """
-    # Leer cantidad de apuestas
-    header = recv_all(sock, HEADER_SIZE)
-    count = struct.unpack("!H", header)[0]
+            # Enviar confirmación al cliente
+            send_confirmation(client_sock, 'success')
 
-    # Leer cada apuesta individualmente reutilizando receive_bet
-    bets = []
-    for _ in range(count):
-        bets.append(receive_bet(sock))
-    return bets
+        except OSError as e:
+            logging.error(f'action: apuesta_recibida | result: fail | error: {e}')
+            send_confirmation(client_sock, 'fail')
+        finally:
+            client_sock.close()
+            logging.info('action: close_client_socket | result: success')
 
+    def __accept_new_connection(self):
+        """
+        Accept new connections
 
-def receive_agency_id(sock):
-    """
-    Lee el agency_id enviado por el cliente.
-    Formato: [2 bytes: agency_id]
-    """
-    header = recv_all(sock, HEADER_SIZE)
-    return struct.unpack("!H", header)[0]
-
-
-def send_confirmation(sock, msg):
-    """
-    Envía una confirmación al cliente.
-    Formato: [2 bytes: largo][mensaje]
-    """
-    data = msg.encode("utf-8")
-    header = struct.pack("!H", len(data))
-    send_all(sock, header + data)
-
-
-def send_winners(sock, winners):
-    """
-    Envía la lista de DNIs ganadores al cliente.
-    Formato: [2 bytes: largo total][DNI1|DNI2|...]
-    Si no hay ganadores envía largo 0.
-    """
-    if not winners:
-        send_all(sock, struct.pack("!H", 0))
-        return
-
-    # Unir DNIs con separador y enviar con header de largo
-    data = SEPARATOR.join(winners).encode("utf-8")
-    header = struct.pack("!H", len(data))
-    send_all(sock, header + data)
+        Function blocks until a connection to a client is made.
+        Then connection created is printed and returned
+        """
+        # Connection arrived
+        logging.info('action: accept_connections | result: in_progress')
+        c, addr = self._server_socket.accept()
+        logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
+        return c
