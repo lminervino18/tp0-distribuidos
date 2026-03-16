@@ -1,3 +1,4 @@
+import os
 import socket
 import logging
 import signal
@@ -9,7 +10,8 @@ from common.protocol import (
 )
 from common.utils import Bet, store_bets, load_bets, has_won
 
-TOTAL_AGENCIES = 5
+# Total de agencias esperadas — configurable por variable de entorno
+TOTAL_AGENCIES = int(os.getenv('TOTAL_AGENCIES', 5))
 
 
 class Server:

@@ -8,7 +8,7 @@ output_file = sys.argv[1]
 num_clients = int(sys.argv[2])
 
 # La parte del server es fija
-content = """name: tp0
+content = f"""name: tp0
 services:
   server:
     container_name: server
@@ -16,6 +16,7 @@ services:
     entrypoint: python3 /main.py
     environment:
       - PYTHONUNBUFFERED=1
+      - TOTAL_AGENCIES={num_clients}
     volumes:
       - ./server/config.ini:/config.ini
     networks:
