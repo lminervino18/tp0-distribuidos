@@ -121,9 +121,9 @@ class Server:
                 try:
                     winners = self.__get_winners(pending_agency_id)
                     send_winners(pending_sock, winners)
-                    logging.info(f'action: consulta_ganadores | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
+                    logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
                 except OSError as e:
-                    logging.error(f'action: consulta_ganadores | result: fail | agency_id: {pending_agency_id} | error: {e}')
+                    logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
                 finally:
                     pending_sock.close()
                     logging.info('action: close_client_socket | result: success')
@@ -141,15 +141,15 @@ class Server:
             try:
                 winners = self.__get_winners(agency_id)
                 send_winners(client_sock, winners)
-                logging.info(f'action: consulta_ganadores | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
+                logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
             except OSError as e:
-                logging.error(f'action: consulta_ganadores | result: fail | agency_id: {agency_id} | error: {e}')
+                logging.error(f'action: ganadores_enviados | result: fail | agency_id: {agency_id} | error: {e}')
             finally:
                 client_sock.close()
                 logging.info('action: close_client_socket | result: success')
         else:
             # Guardar conexión para responder cuando el sorteo esté listo
-            logging.info(f'action: consulta_ganadores | result: in_progress | agency_id: {agency_id}')
+            logging.info(f'action: ganadores_enviados | result: in_progress | agency_id: {agency_id}')
             self._pending_queries[agency_id] = client_sock
 
     def __get_winners(self, agency_id):
