@@ -1,6 +1,12 @@
-## Ejercicio 5
+## Ejercicio 6
 
 ### Cómo ejecutar
+Descomprimir los datasets de las agencias:
+```bash
+unzip .data/dataset.zip -d .data/
+```
+
+Generar el compose, construir y levantar:
 ```bash
 ./generar-compose.sh docker-compose-dev.yaml 5
 make docker-compose-up
@@ -13,34 +19,30 @@ make docker-compose-down
 ```
 
 ### Cómo verificar
-Se debe observar en los logs del cliente:
+Se debe observar en los logs del cliente batches de 150 apuestas y un último batch menor:
 ```
-client1 | action: apuesta_enviada | result: success | dni: 30904461 | numero: 7571
+client1 | action: apuesta_enviada | result: success | cantidad: 150
+client1 | action: apuesta_enviada | result: success | cantidad: 86
+client1 | action: loop_finished | result: success | client_id: 1
 ```
 
 Y en los del servidor:
 ```
-server | action: apuesta_almacenada | result: success | dni: 30904461 | numero: 7571
+server | action: apuesta_recibida | result: success | cantidad: 150
+server | action: apuesta_recibida | result: success | cantidad: 86
 ```
-
-### Protocolo de comunicación
-Se implementó un protocolo binario propio con el siguiente formato:
-```
-[2 bytes big-endian: largo del mensaje][mensaje en texto plano]
-```
-
-Los campos de la apuesta se serializan separados por `|`:
-```
-agency|first_name|last_name|document|birthdate|number
-```
-
-El mismo formato se usa para la confirmación del servidor. Se evitan short-read y short-write mediante loops que garantizan la lectura/escritura de exactamente N bytes.
 
 ### Implementación
-La lógica se modularizó en tres capas:
+El protocolo de batch extiende el del ejercicio 5 agregando un header de cantidad:
+```
+[2 bytes: cantidad de apuestas][apuesta1][apuesta2]...[apuestaN]
+```
 
-**Modelo de dominio:** `bet.go` (cliente) y `utils.py` (servidor) contienen el struct/clase `Bet` sin lógica de comunicación.
+Donde cada apuesta mantiene el mismo formato que antes:
+```
+[2 bytes: largo][agency|first_name|last_name|document|birthdate|number]
+```
 
-**Capa de comunicación:** `protocol.go` (cliente) y `protocol.py` (servidor) contienen la serialización, `sendAll`/`recvAll` y el protocolo de longitud prefija.
+El tamaño máximo del batch es configurable desde `config.yaml` con la clave `batch.maxAmount`. El valor por defecto es 150 apuestas, lo que garantiza que los paquetes no superen los 8kB (~52 bytes por apuesta × 150 = ~7.8kB).
 
-**Lógica de negocio:** `client.go` y `server.py` orquestan el flujo usando las capas anteriores.
+Los archivos CSV de cada agencia se inyectan como volúmenes en los containers correspondientes siguiendo la convención `.data/agency-{N}.csv`.
