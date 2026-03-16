@@ -59,20 +59,92 @@ func (c *Client) readBetsFromCSV(csvPath string) ([]*Bet, error) {
 	}
 	defer file.Close()
 
-	// Leer todas las filas del CSV
 	reader := csv.NewReader(file)
 	rows, err := reader.ReadAll()
 	if err != nil {
 		return nil, err
 	}
 
-	// Convertir cada fila a una Bet
 	bets := make([]*Bet, 0, len(rows))
 	for _, row := range rows {
 		bet := NewBet(c.config.ID, row[0], row[1], row[2], row[3], row[4])
 		bets = append(bets, bet)
 	}
 	return bets, nil
+}
+
+// sendBatches envía todas las apuestas en batches al servidor
+// Retorna false si se recibió SIGTERM durante el envío
+func (c *Client) sendBatches(bets []*Bet, stopChan chan struct{}) bool {
+	for i := 0; i < len(bets); i += c.config.BatchMaxAmount {
+		select {
+		case <-stopChan:
+			return false
+		default:
+		}
+
+		end := i + c.config.BatchMaxAmount
+		if end > len(bets) {
+			end = len(bets)
+		}
+		batch := bets[i:end]
+
+		c.createClientSocket()
+		if err := SendBatch(c.conn, batch); err != nil {
+			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+				c.config.ID, err)
+			c.conn.Close()
+			return false
+		}
+
+		confirmation, err := ReceiveBatchConfirmation(c.conn)
+		c.conn.Close()
+		if err != nil {
+			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+				c.config.ID, err)
+			return false
+		}
+
+		log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
+			confirmation, len(batch))
+	}
+	return true
+}
+
+// notifyFin notifica al servidor que terminamos de enviar apuestas
+func (c *Client) notifyFin() error {
+	c.createClientSocket()
+	if err := SendFin(c.conn, c.config.ID); err != nil {
+		log.Errorf("action: notify_fin | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		c.conn.Close()
+		return err
+	}
+	c.conn.Close()
+	return nil
+}
+
+// queryWinners consulta los ganadores al servidor y loguea el resultado
+func (c *Client) queryWinners() error {
+	c.createClientSocket()
+	if err := SendQuery(c.conn, c.config.ID); err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		c.conn.Close()
+		return err
+	}
+
+	winners, err := ReceiveWinners(c.conn)
+	c.conn.Close()
+	if err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return err
+	}
+
+	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v",
+		len(winners))
+	return nil
 }
 
 // StartClientLoop lee el CSV, envía apuestas en batches, notifica fin y consulta ganadores
@@ -96,7 +168,6 @@ func (c *Client) StartClientLoop(csvPath string) {
 		close(stopChan)
 	}()
 
-	// Leer todas las apuestas del CSV
 	bets, err := c.readBetsFromCSV(csvPath)
 	if err != nil {
 		log.Errorf("action: read_csv | result: fail | client_id: %v | error: %v",
@@ -104,71 +175,13 @@ func (c *Client) StartClientLoop(csvPath string) {
 		return
 	}
 
-	// Enviar apuestas en batches
-	for i := 0; i < len(bets); i += c.config.BatchMaxAmount {
-		// Verificar si llegó SIGTERM antes de cada batch
-		select {
-		case <-stopChan:
-			return
-		default:
-		}
-
-		// Calcular el fin del batch actual
-		end := i + c.config.BatchMaxAmount
-		if end > len(bets) {
-			end = len(bets)
-		}
-		batch := bets[i:end]
-
-		// Conectar y enviar el batch
-		c.createClientSocket()
-		if err := SendBatch(c.conn, batch); err != nil {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID, err)
-			c.conn.Close()
-			return
-		}
-
-		// Esperar confirmación del servidor
-		confirmation, err := ReceiveBatchConfirmation(c.conn)
-		c.conn.Close()
-		if err != nil {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID, err)
-			return
-		}
-
-		log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
-			confirmation, len(batch))
-	}
-
-	// Notificar al servidor que terminamos de enviar apuestas
-	c.createClientSocket()
-	if err := SendFin(c.conn, c.config.ID); err != nil {
-		log.Errorf("action: notify_fin | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
-		c.conn.Close()
-		return
-	}
-	c.conn.Close()
-
-	// Consultar ganadores — el servidor bloquea hasta tener las 5 agencias
-	c.createClientSocket()
-	if err := SendQuery(c.conn, c.config.ID); err != nil {
-		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
-		c.conn.Close()
+	if !c.sendBatches(bets, stopChan) {
 		return
 	}
 
-	winners, err := ReceiveWinners(c.conn)
-	c.conn.Close()
-	if err != nil {
-		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
+	if err := c.notifyFin(); err != nil {
 		return
 	}
 
-	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v",
-		len(winners))
+	c.queryWinners()
 }

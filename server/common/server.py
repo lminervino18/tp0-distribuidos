@@ -61,7 +61,6 @@ class Server:
         while self._running:
             try:
                 client_sock = self.__accept_new_connection()
-                # Despachar al pool sin bloquear el loop principal
                 self._executor.submit(self.__handle_client_connection, client_sock)
             except OSError as e:
                 if self._running:
@@ -120,30 +119,34 @@ class Server:
         """
         agency_id = receive_agency_id(client_sock)
 
-        # Sección crítica: modificar estado compartido y posiblemente hacer el sorteo
         with self._lock:
             self._finished_agencies.add(agency_id)
             logging.info(f'action: fin_recibido | result: success | agency_id: {agency_id} | total: {len(self._finished_agencies)}')
 
             if len(self._finished_agencies) == TOTAL_AGENCIES:
-                self._lottery_done = True
-                logging.info('action: sorteo | result: success')
+                self.__resolve_lottery()
 
-                # Responder a todas las conexiones pendientes
-                pending = list(self._pending_queries.items())
-                self._pending_queries.clear()
+    def __resolve_lottery(self):
+        """
+        Realiza el sorteo y responde a todas las conexiones pendientes.
+        Debe llamarse dentro del lock.
+        """
+        self._lottery_done = True
+        logging.info('action: sorteo | result: success')
 
-                for pending_agency_id, pending_sock in pending:
-                    try:
-                        # load_bets no es thread-safe — ya estamos dentro del lock
-                        winners = self.__get_winners(pending_agency_id)
-                        send_winners(pending_sock, winners)
-                        logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
-                    except OSError as e:
-                        logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
-                    finally:
-                        pending_sock.close()
-                        logging.info('action: close_client_socket | result: success')
+        pending = list(self._pending_queries.items())
+        self._pending_queries.clear()
+
+        for pending_agency_id, pending_sock in pending:
+            try:
+                winners = self.__get_winners(pending_agency_id)
+                send_winners(pending_sock, winners)
+                logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
+            except OSError as e:
+                logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
+            finally:
+                pending_sock.close()
+                logging.info('action: close_client_socket | result: success')
 
     def __handle_query(self, client_sock):
         """
@@ -153,12 +156,9 @@ class Server:
         """
         agency_id = receive_agency_id(client_sock)
 
-        # Sección crítica: leer y modificar estado compartido
         with self._lock:
             if self._lottery_done:
-                # Sorteo ya realizado, responder inmediatamente
                 try:
-                    # load_bets no es thread-safe — ya estamos dentro del lock
                     winners = self.__get_winners(agency_id)
                     send_winners(client_sock, winners)
                     logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
@@ -168,7 +168,6 @@ class Server:
                     client_sock.close()
                     logging.info('action: close_client_socket | result: success')
             else:
-                # Guardar conexión para responder cuando el sorteo esté listo
                 logging.info(f'action: consulta_ganadores | result: in_progress | agency_id: {agency_id}')
                 self._pending_queries[agency_id] = client_sock
 
@@ -190,7 +189,6 @@ class Server:
         Function blocks until a connection to a client is made.
         Then connection created is printed and returned
         """
-        # Connection arrived
         logging.info('action: accept_connections | result: in_progress')
         c, addr = self._server_socket.accept()
         logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
