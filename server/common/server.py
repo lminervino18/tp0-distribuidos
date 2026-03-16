@@ -2,6 +2,8 @@ import os
 import socket
 import logging
 import signal
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from common.protocol import (
     MSG_BATCH, MSG_FIN, MSG_QUERY,
@@ -27,8 +29,13 @@ class Server:
         # Indica si el sorteo ya fue realizado
         self._lottery_done = False
         # Cola de conexiones pendientes que consultaron antes del sorteo
-        # agency_id -> client_sock
         self._pending_queries = {}
+
+        # Lock global para proteger todo el estado compartido entre threads
+        self._lock = threading.Lock()
+
+        # Pool de threads para manejar conexiones en paralelo
+        self._executor = ThreadPoolExecutor(max_workers=listen_backlog)
 
         # Registrar handler de SIGTERM para graceful shutdown
         signal.signal(signal.SIGTERM, self.__handle_sigterm)
@@ -36,10 +43,11 @@ class Server:
     def __handle_sigterm(self, sig, frame):
         """
         Handle SIGTERM signal for graceful shutdown.
-        Closes the server socket and stops the main loop.
+        Cierra el server socket, detiene el pool y termina el loop.
         """
         logging.info('action: receive_sigterm | result: success')
         self._running = False
+        self._executor.shutdown(wait=False)
         self._server_socket.close()
         logging.info('action: close_server_socket | result: success')
 
@@ -47,13 +55,14 @@ class Server:
         """
         Server loop
 
-        Accepts new connections and dispatches each message type.
-        After client communication finishes, server starts to accept new connections again.
+        Acepta conexiones y las despacha al pool de threads.
+        El loop principal solo acepta — no bloquea procesando mensajes.
         """
         while self._running:
             try:
                 client_sock = self.__accept_new_connection()
-                self.__handle_client_connection(client_sock)
+                # Despachar al pool sin bloquear el loop principal
+                self._executor.submit(self.__handle_client_connection, client_sock)
             except OSError as e:
                 if self._running:
                     logging.error(f'action: accept_connections | result: fail | error: {e}')
@@ -63,6 +72,7 @@ class Server:
     def __handle_client_connection(self, client_sock):
         """
         Lee el tipo de mensaje y despacha al handler correspondiente.
+        Se ejecuta en un thread del pool.
         Las conexiones de consulta pendientes no se cierran acá —
         se cierran cuando el sorteo esté listo.
         """
@@ -78,8 +88,6 @@ class Server:
                 client_sock.close()
                 logging.info('action: close_client_socket | result: success')
             elif msg_type == MSG_QUERY:
-                # Si el sorteo ya está listo responder inmediatamente
-                # sino guardar la conexión para responder después
                 self.__handle_query(client_sock)
             else:
                 logging.error(f'action: receive_message | result: fail | error: unknown type {msg_type}')
@@ -90,43 +98,52 @@ class Server:
             client_sock.close()
 
     def __handle_batch(self, client_sock):
-        """Recibe un batch de apuestas, las persiste y confirma al cliente"""
+        """
+        Recibe un batch de apuestas, las persiste y confirma al cliente.
+        store_bets no es thread-safe — proteger con lock.
+        """
         fields_list = receive_batch(client_sock)
         bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
 
-        store_bets(bets)
+        # Sección crítica: store_bets no es thread-safe
+        with self._lock:
+            store_bets(bets)
+
         logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
         send_confirmation(client_sock, 'success')
 
     def __handle_fin(self, client_sock):
         """
         Registra que una agencia terminó de enviar apuestas.
-        Cuando llegan las 5 agencias realiza el sorteo y responde
+        Cuando llegan todas las agencias realiza el sorteo y responde
         a todas las conexiones pendientes.
         """
         agency_id = receive_agency_id(client_sock)
-        self._finished_agencies.add(agency_id)
-        logging.info(f'action: fin_recibido | result: success | agency_id: {agency_id} | total: {len(self._finished_agencies)}')
 
-        # Cuando todas las agencias terminaron realizar el sorteo
-        if len(self._finished_agencies) == TOTAL_AGENCIES:
-            self._lottery_done = True
-            logging.info('action: sorteo | result: success')
+        # Sección crítica: modificar estado compartido y posiblemente hacer el sorteo
+        with self._lock:
+            self._finished_agencies.add(agency_id)
+            logging.info(f'action: fin_recibido | result: success | agency_id: {agency_id} | total: {len(self._finished_agencies)}')
 
-            # Responder a todas las conexiones que estaban esperando
-            pending = list(self._pending_queries.items())
-            self._pending_queries.clear()
+            if len(self._finished_agencies) == TOTAL_AGENCIES:
+                self._lottery_done = True
+                logging.info('action: sorteo | result: success')
 
-            for pending_agency_id, pending_sock in pending:
-                try:
-                    winners = self.__get_winners(pending_agency_id)
-                    send_winners(pending_sock, winners)
-                    logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
-                except OSError as e:
-                    logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
-                finally:
-                    pending_sock.close()
-                    logging.info('action: close_client_socket | result: success')
+                # Responder a todas las conexiones pendientes
+                pending = list(self._pending_queries.items())
+                self._pending_queries.clear()
+
+                for pending_agency_id, pending_sock in pending:
+                    try:
+                        # load_bets no es thread-safe — ya estamos dentro del lock
+                        winners = self.__get_winners(pending_agency_id)
+                        send_winners(pending_sock, winners)
+                        logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
+                    except OSError as e:
+                        logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
+                    finally:
+                        pending_sock.close()
+                        logging.info('action: close_client_socket | result: success')
 
     def __handle_query(self, client_sock):
         """
@@ -136,24 +153,30 @@ class Server:
         """
         agency_id = receive_agency_id(client_sock)
 
-        if self._lottery_done:
-            # Sorteo ya realizado, responder inmediatamente
-            try:
-                winners = self.__get_winners(agency_id)
-                send_winners(client_sock, winners)
-                logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
-            except OSError as e:
-                logging.error(f'action: ganadores_enviados | result: fail | agency_id: {agency_id} | error: {e}')
-            finally:
-                client_sock.close()
-                logging.info('action: close_client_socket | result: success')
-        else:
-            # Guardar conexión para responder cuando el sorteo esté listo
-            logging.info(f'action: ganadores_enviados | result: in_progress | agency_id: {agency_id}')
-            self._pending_queries[agency_id] = client_sock
+        # Sección crítica: leer y modificar estado compartido
+        with self._lock:
+            if self._lottery_done:
+                # Sorteo ya realizado, responder inmediatamente
+                try:
+                    # load_bets no es thread-safe — ya estamos dentro del lock
+                    winners = self.__get_winners(agency_id)
+                    send_winners(client_sock, winners)
+                    logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
+                except OSError as e:
+                    logging.error(f'action: ganadores_enviados | result: fail | agency_id: {agency_id} | error: {e}')
+                finally:
+                    client_sock.close()
+                    logging.info('action: close_client_socket | result: success')
+            else:
+                # Guardar conexión para responder cuando el sorteo esté listo
+                logging.info(f'action: consulta_ganadores | result: in_progress | agency_id: {agency_id}')
+                self._pending_queries[agency_id] = client_sock
 
     def __get_winners(self, agency_id):
-        """Retorna los DNIs ganadores de una agencia específica"""
+        """
+        Retorna los DNIs ganadores de una agencia específica.
+        Debe llamarse dentro del lock — load_bets no es thread-safe.
+        """
         return [
             bet.document
             for bet in load_bets()
