@@ -2,8 +2,14 @@ import socket
 import logging
 import signal
 
-from common.protocol import receive_batch, send_confirmation
-from common.utils import Bet, store_bets
+from common.protocol import (
+    MSG_BATCH, MSG_FIN, MSG_QUERY,
+    receive_message_type, receive_batch, receive_agency_id,
+    send_confirmation, send_winners
+)
+from common.utils import Bet, store_bets, load_bets, has_won
+
+TOTAL_AGENCIES = 5
 
 
 class Server:
@@ -13,6 +19,14 @@ class Server:
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
         self._running = True
+
+        # Conjunto de agencias que notificaron fin
+        self._finished_agencies = set()
+        # Indica si el sorteo ya fue realizado
+        self._lottery_done = False
+        # Cola de conexiones pendientes que consultaron antes del sorteo
+        # agency_id -> client_sock
+        self._pending_queries = {}
 
         # Registrar handler de SIGTERM para graceful shutdown
         signal.signal(signal.SIGTERM, self.__handle_sigterm)
@@ -31,7 +45,7 @@ class Server:
         """
         Server loop
 
-        Accepts new connections and handles each client.
+        Accepts new connections and dispatches each message type.
         After client communication finishes, server starts to accept new connections again.
         """
         while self._running:
@@ -46,29 +60,98 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Read batch of bets from client, store them and send confirmation.
-
-        If a problem arises in the communication with the client, the
-        client socket will also be closed
+        Lee el tipo de mensaje y despacha al handler correspondiente.
+        Las conexiones de consulta pendientes no se cierran acá —
+        se cierran cuando el sorteo esté listo.
         """
         try:
-            # Recibir el batch de apuestas usando el protocolo
-            fields_list = receive_batch(client_sock)
-            bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
+            msg_type = receive_message_type(client_sock)
 
-            # Persistir todas las apuestas del batch
-            store_bets(bets)
-            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
-
-            # Enviar confirmación al cliente
-            send_confirmation(client_sock, 'success')
+            if msg_type == MSG_BATCH:
+                self.__handle_batch(client_sock)
+                client_sock.close()
+                logging.info('action: close_client_socket | result: success')
+            elif msg_type == MSG_FIN:
+                self.__handle_fin(client_sock)
+                client_sock.close()
+                logging.info('action: close_client_socket | result: success')
+            elif msg_type == MSG_QUERY:
+                # Si el sorteo ya está listo responder inmediatamente
+                # sino guardar la conexión para responder después
+                self.__handle_query(client_sock)
+            else:
+                logging.error(f'action: receive_message | result: fail | error: unknown type {msg_type}')
+                client_sock.close()
 
         except OSError as e:
-            logging.error(f'action: apuesta_recibida | result: fail | error: {e}')
-            send_confirmation(client_sock, 'fail')
-        finally:
+            logging.error(f'action: receive_message | result: fail | error: {e}')
+            client_sock.close()
+
+    def __handle_batch(self, client_sock):
+        """Recibe un batch de apuestas, las persiste y confirma al cliente"""
+        fields_list = receive_batch(client_sock)
+        bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
+
+        store_bets(bets)
+        logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
+        send_confirmation(client_sock, 'success')
+
+    def __handle_fin(self, client_sock):
+        """
+        Registra que una agencia terminó de enviar apuestas.
+        Cuando llegan las 5 agencias realiza el sorteo y responde
+        a todas las conexiones pendientes.
+        """
+        agency_id = receive_agency_id(client_sock)
+        self._finished_agencies.add(agency_id)
+        logging.info(f'action: fin_recibido | result: success | agency_id: {agency_id} | total: {len(self._finished_agencies)}')
+
+        # Cuando todas las agencias terminaron realizar el sorteo
+        if len(self._finished_agencies) == TOTAL_AGENCIES:
+            self._lottery_done = True
+            logging.info('action: sorteo | result: success')
+
+            # Responder a todas las conexiones que estaban esperando
+            for pending_agency_id, pending_sock in self._pending_queries.items():
+                try:
+                    winners = self.__get_winners(pending_agency_id)
+                    send_winners(pending_sock, winners)
+                    logging.info(f'action: consulta_ganadores | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
+                except OSError as e:
+                    logging.error(f'action: consulta_ganadores | result: fail | agency_id: {pending_agency_id} | error: {e}')
+                finally:
+                    pending_sock.close()
+                    logging.info('action: close_client_socket | result: success')
+
+            self._pending_queries.clear()
+
+    def __handle_query(self, client_sock):
+        """
+        Responde con los DNIs ganadores de la agencia.
+        Si el sorteo no está listo guarda la conexión en la cola
+        y la responde cuando llegue el último fin.
+        """
+        agency_id = receive_agency_id(client_sock)
+
+        if self._lottery_done:
+            # Sorteo ya realizado, responder inmediatamente
+            winners = self.__get_winners(agency_id)
+            send_winners(client_sock, winners)
+            logging.info(f'action: consulta_ganadores | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
             client_sock.close()
             logging.info('action: close_client_socket | result: success')
+        else:
+            # Guardar conexión para responder cuando el sorteo esté listo
+            logging.info(f'action: consulta_ganadores | result: waiting | agency_id: {agency_id}')
+            self._pending_queries[agency_id] = client_sock
+
+    def __get_winners(self, agency_id):
+        """Retorna los DNIs ganadores de una agencia específica"""
+        return [
+            bet.document
+            for bet in load_bets()
+            if bet.agency == agency_id and has_won(bet)
+        ]
 
     def __accept_new_connection(self):
         """
