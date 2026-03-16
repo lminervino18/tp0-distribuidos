@@ -1,8 +1,6 @@
 package common
 
 import (
-	"bufio"
-	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -31,15 +29,10 @@ type Client struct {
 // NewClient Initializes a new client receiving the configuration
 // as a parameter
 func NewClient(config ClientConfig) *Client {
-	client := &Client{
-		config: config,
-	}
-	return client
+	return &Client{config: config}
 }
 
-// CreateClientSocket Initializes client socket. In case of
-// failure, error is printed in stdout/stderr and exit 1
-// is returned
+// createClientSocket Initializes client socket retrying until success
 func (c *Client) createClientSocket() error {
 	for {
 		conn, err := net.Dial("tcp", c.config.ServerAddress)
@@ -56,8 +49,8 @@ func (c *Client) createClientSocket() error {
 	}
 }
 
-// StartClientLoop Send messages to the client until some time threshold is met
-func (c *Client) StartClientLoop() {
+// StartClientLoop sends a bet to the server and waits for confirmation
+func (c *Client) StartClientLoop(bet *Bet) {
 	// Canal para recibir señales del sistema operativo
 	sigChan := make(chan os.Signal, 1)
 	// Registrar SIGTERM en el canal para graceful shutdown
@@ -68,54 +61,35 @@ func (c *Client) StartClientLoop() {
 
 	// Goroutine que espera SIGTERM en paralelo al loop principal
 	go func() {
-		<-sigChan // bloquea hasta recibir SIGTERM
+		<-sigChan
 		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
 		if c.conn != nil {
 			c.conn.Close()
 			log.Infof("action: close_connection | result: success | client_id: %v", c.config.ID)
 		}
-		// Notifica al loop principal para interrumpir el sleep
 		close(stopChan)
 	}()
 
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		// Create the connection the server in every loop iteration. Send an
-		c.createClientSocket()
+	// Conectar al servidor y enviar la apuesta
+	c.createClientSocket()
 
-		// TODO: Modify the send to avoid short-write
-		fmt.Fprintf(
-			c.conn,
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		)
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
+	if err := SendBet(c.conn, bet); err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
 		c.conn.Close()
-
-		if err != nil {
-			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
-			return
-		}
-
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		// Wait a time between sending one message and the next one
-		// Usa select para poder interrumpir el sleep si llega SIGTERM
-		select {
-		case <-time.After(c.config.LoopPeriod):
-			// tiempo normal de espera
-		case <-stopChan:
-			// llegó SIGTERM, terminar el loop limpiamente
-			return
-		}
+		return
 	}
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+
+	// Esperar confirmación del servidor
+	confirmation, err := ReceiveConfirmation(c.conn)
+	c.conn.Close()
+
+	if err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return
+	}
+
+	log.Infof("action: apuesta_enviada | result: %v | dni: %v | numero: %v",
+		confirmation, bet.Document, bet.Number)
 }

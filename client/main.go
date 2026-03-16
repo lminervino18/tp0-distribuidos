@@ -48,7 +48,6 @@ func InitConfig() (*viper.Viper, error) {
 	}
 
 	// Parse time.Duration variables and return an error if those variables cannot be parsed
-
 	if _, err := time.ParseDuration(v.GetString("loop.period")); err != nil {
 		return nil, errors.Wrapf(err, "Could not parse CLI_LOOP_PERIOD env var as time.Duration.")
 	}
@@ -90,6 +89,22 @@ func PrintConfig(v *viper.Viper) {
 	)
 }
 
+// initBet lee las variables de entorno de la apuesta y construye una Bet
+func initBet(agencyID string) (*common.Bet, error) {
+	firstName := os.Getenv("NOMBRE")
+	lastName := os.Getenv("APELLIDO")
+	document := os.Getenv("DOCUMENTO")
+	birthdate := os.Getenv("NACIMIENTO")
+	number := os.Getenv("NUMERO")
+
+	// Verificar que todos los campos estén presentes
+	if firstName == "" || lastName == "" || document == "" || birthdate == "" || number == "" {
+		return nil, errors.New("faltan variables de entorno para la apuesta")
+	}
+
+	return common.NewBet(agencyID, firstName, lastName, document, birthdate, number), nil
+}
+
 func main() {
 	v, err := InitConfig()
 	if err != nil {
@@ -110,6 +125,12 @@ func main() {
 		LoopPeriod:    v.GetDuration("loop.period"),
 	}
 
+	// Construir la apuesta desde las variables de entorno
+	bet, err := initBet(v.GetString("id"))
+	if err != nil {
+		log.Criticalf("action: init_bet | result: fail | error: %v", err)
+	}
+
 	client := common.NewClient(clientConfig)
-	client.StartClientLoop()
+	client.StartClientLoop(bet)
 }
