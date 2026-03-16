@@ -34,7 +34,6 @@ def receive_bet(sock):
     """
     # Leer header con el largo del mensaje
     header = recv_all(sock, HEADER_SIZE)
-    # Desempaquetar el largo como entero big-endian de 2 bytes
     length = struct.unpack("!H", header)[0]
 
     # Leer exactamente los bytes indicados en el header
@@ -43,12 +42,28 @@ def receive_bet(sock):
     return fields
 
 
+def receive_batch(sock):
+    """
+    Recibe un batch de apuestas del cliente.
+    Formato: [2 bytes: cantidad de apuestas][apuesta1][apuesta2]...[apuestaN]
+    Retorna una lista de listas con los campos de cada apuesta
+    """
+    # Leer header con la cantidad de apuestas
+    header = recv_all(sock, HEADER_SIZE)
+    count = struct.unpack("!H", header)[0]
+
+    # Leer cada apuesta individualmente reutilizando receive_bet
+    bets = []
+    for _ in range(count):
+        bets.append(receive_bet(sock))
+    return bets
+
+
 def send_confirmation(sock, msg):
     """
     Envía una confirmación al cliente.
     Formato: [2 bytes big-endian: largo][mensaje]
     """
     data = msg.encode("utf-8")
-    # Empaquetar el largo como entero big-endian de 2 bytes
     header = struct.pack("!H", len(data))
     send_all(sock, header + data)

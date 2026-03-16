@@ -6,3 +6,6 @@ bin/
 
 # Compose generado por el script
 docker-compose-dev.yaml
+
+# Archivos de datos
+.csv

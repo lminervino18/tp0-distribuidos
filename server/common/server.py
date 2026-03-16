@@ -2,7 +2,7 @@ import socket
 import logging
 import signal
 
-from common.protocol import receive_bet, send_confirmation
+from common.protocol import receive_batch, send_confirmation
 from common.utils import Bet, store_bets
 
 
@@ -46,25 +46,26 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Read bet from a specific client socket, store it and send confirmation.
+        Read batch of bets from client, store them and send confirmation.
 
         If a problem arises in the communication with the client, the
         client socket will also be closed
         """
         try:
-            # Recibir los campos de la apuesta usando el protocolo
-            fields = receive_bet(client_sock)
-            bet = Bet(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5])
+            # Recibir el batch de apuestas usando el protocolo
+            fields_list = receive_batch(client_sock)
+            bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
 
-            # Persistir la apuesta usando la función provista por la cátedra
-            store_bets([bet])
-            logging.info(f'action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}')
+            # Persistir todas las apuestas del batch
+            store_bets(bets)
+            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
 
             # Enviar confirmación al cliente
             send_confirmation(client_sock, 'success')
 
         except OSError as e:
-            logging.error(f'action: receive_message | result: fail | error: {e}')
+            logging.error(f'action: apuesta_recibida | result: fail | error: {e}')
+            send_confirmation(client_sock, 'fail')
         finally:
             client_sock.close()
             logging.info('action: close_client_socket | result: success')
