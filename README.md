@@ -1,12 +1,6 @@
-## Ejercicio 6
+## Ejercicio 7
 
 ### Cómo ejecutar
-Descomprimir los datasets de las agencias:
-```bash
-unzip .data/dataset.zip -d .data/
-```
-
-Generar el compose, construir y levantar:
 ```bash
 ./generar-compose.sh docker-compose-dev.yaml 5
 make docker-compose-up
@@ -19,30 +13,28 @@ make docker-compose-down
 ```
 
 ### Cómo verificar
-Se debe observar en los logs del cliente batches de 150 apuestas y un último batch menor:
+Se debe observar el sorteo y las consultas de ganadores:
 ```
-client1 | action: apuesta_enviada | result: success | cantidad: 150
-client1 | action: apuesta_enviada | result: success | cantidad: 86
-client1 | action: loop_finished | result: success | client_id: 1
+server | action: sorteo | result: success
+client1 | action: consulta_ganadores | result: success | cant_ganadores: 2
 ```
 
-Y en los del servidor:
+### Protocolo
+Se agregaron dos nuevos tipos de mensaje al protocolo, discriminados por un byte de tipo al inicio de cada mensaje:
 ```
-server | action: apuesta_recibida | result: success | cantidad: 150
-server | action: apuesta_recibida | result: success | cantidad: 86
+0x01 → MSG_BATCH   batch de apuestas
+0x02 → MSG_FIN     notificación de fin de envío
+0x03 → MSG_QUERY   consulta de ganadores
+```
+
+La respuesta del servidor con los ganadores usa el formato:
+```
+[2 bytes: largo total][DNI1|DNI2|...]
 ```
 
 ### Implementación
-El protocolo de batch extiende el del ejercicio 5 agregando un header de cantidad:
-```
-[2 bytes: cantidad de apuestas][apuesta1][apuesta2]...[apuestaN]
-```
+Cada cliente al terminar de enviar todos sus batches abre una conexión nueva y envía `MSG_FIN` con su agency_id. Luego abre otra conexión y envía `MSG_QUERY` quedando bloqueado esperando la respuesta.
 
-Donde cada apuesta mantiene el mismo formato que antes:
-```
-[2 bytes: largo][agency|first_name|last_name|document|birthdate|number]
-```
+El servidor mantiene una **cola de conexiones pendientes** (`_pending_queries`) — cuando una agencia consulta antes del sorteo, el servidor no responde ni cierra la conexión, sino que la guarda en la cola. Cuando llega el último `MSG_FIN` (la agencia N), el servidor realiza el sorteo y responde a todas las conexiones pendientes antes de aceptar nuevas. Esto garantiza que ninguna agencia recibe información parcial.
 
-El tamaño máximo del batch es configurable desde `config.yaml` con la clave `batch.maxAmount`. El valor por defecto es 150 apuestas, lo que garantiza que los paquetes no superen los 8kB (~52 bytes por apuesta × 150 = ~7.8kB).
-
-Los archivos CSV de cada agencia se inyectan como volúmenes en los containers correspondientes siguiendo la convención `.data/agency-{N}.csv`.
+El número de agencias esperadas es configurable mediante la variable de entorno `TOTAL_AGENCIES` que es obtenida por la cantidad de clientes.
