@@ -83,3 +83,28 @@ func ReceiveConfirmation(conn net.Conn) (string, error) {
 
 	return string(data), nil
 }
+
+// SendBatch envía un batch de apuestas al servidor
+// Formato: [2 bytes: cantidad de apuestas][apuesta1][apuesta2]...[apuestaN]
+func SendBatch(conn net.Conn, bets []*Bet) error {
+	// Enviar header con la cantidad de apuestas en 2 bytes big-endian
+	header := make([]byte, 2)
+	binary.BigEndian.PutUint16(header, uint16(len(bets)))
+	if err := sendAll(conn, header); err != nil {
+		return err
+	}
+
+	// Enviar cada apuesta individualmente reutilizando SendBet
+	for _, bet := range bets {
+		if err := SendBet(conn, bet); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReceiveBatchConfirmation lee la confirmación del servidor para un batch
+// Formato: [2 bytes: largo][texto]
+func ReceiveBatchConfirmation(conn net.Conn) (string, error) {
+	return ReceiveConfirmation(conn)
+}
