@@ -112,7 +112,10 @@ class Server:
             logging.info('action: sorteo | result: success')
 
             # Responder a todas las conexiones que estaban esperando
-            for pending_agency_id, pending_sock in self._pending_queries.items():
+            pending = list(self._pending_queries.items())
+            self._pending_queries.clear()
+
+            for pending_agency_id, pending_sock in pending:
                 try:
                     winners = self.__get_winners(pending_agency_id)
                     send_winners(pending_sock, winners)
@@ -122,8 +125,6 @@ class Server:
                 finally:
                     pending_sock.close()
                     logging.info('action: close_client_socket | result: success')
-
-            self._pending_queries.clear()
 
     def __handle_query(self, client_sock):
         """
@@ -135,11 +136,15 @@ class Server:
 
         if self._lottery_done:
             # Sorteo ya realizado, responder inmediatamente
-            winners = self.__get_winners(agency_id)
-            send_winners(client_sock, winners)
-            logging.info(f'action: consulta_ganadores | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
-            client_sock.close()
-            logging.info('action: close_client_socket | result: success')
+            try:
+                winners = self.__get_winners(agency_id)
+                send_winners(client_sock, winners)
+                logging.info(f'action: consulta_ganadores | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
+            except OSError as e:
+                logging.error(f'action: consulta_ganadores | result: fail | agency_id: {agency_id} | error: {e}')
+            finally:
+                client_sock.close()
+                logging.info('action: close_client_socket | result: success')
         else:
             # Guardar conexión para responder cuando el sorteo esté listo
             logging.info(f'action: consulta_ganadores | result: waiting | agency_id: {agency_id}')
