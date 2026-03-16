@@ -75,7 +75,7 @@ func (c *Client) readBetsFromCSV(csvPath string) ([]*Bet, error) {
 	return bets, nil
 }
 
-// StartClientLoop lee el CSV y envía las apuestas en batches al servidor
+// StartClientLoop lee el CSV, envía apuestas en batches, notifica fin y consulta ganadores
 func (c *Client) StartClientLoop(csvPath string) {
 	// Canal para recibir señales del sistema operativo
 	sigChan := make(chan os.Signal, 1)
@@ -142,5 +142,33 @@ func (c *Client) StartClientLoop(csvPath string) {
 			confirmation, len(batch))
 	}
 
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+	// Notificar al servidor que terminamos de enviar apuestas
+	c.createClientSocket()
+	if err := SendFin(c.conn, c.config.ID); err != nil {
+		log.Errorf("action: notify_fin | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		c.conn.Close()
+		return
+	}
+	c.conn.Close()
+
+	// Consultar ganadores — el servidor bloquea hasta tener las 5 agencias
+	c.createClientSocket()
+	if err := SendQuery(c.conn, c.config.ID); err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		c.conn.Close()
+		return
+	}
+
+	winners, err := ReceiveWinners(c.conn)
+	c.conn.Close()
+	if err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return
+	}
+
+	log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %v",
+		len(winners))
 }
