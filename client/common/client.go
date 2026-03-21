@@ -3,6 +3,7 @@ package common
 import (
 	"encoding/csv"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -56,28 +57,81 @@ func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	}
 }
 
-// readBetsFromCSV lee todas las apuestas del archivo CSV de la agencia
-func (c *Client) readBetsFromCSV(csvPath string) ([]*Bet, error) {
+// sendOneBatch conecta al servidor, envía un batch y espera confirmación
+func (c *Client) sendOneBatch(batch []*Bet, stopChan <-chan struct{}) bool {
+	if err := c.createClientSocket(stopChan); err != nil {
+		log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+		return false
+	}
+
+	if err := SendBatch(c.conn, batch); err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		c.conn.Close()
+		return false
+	}
+
+	confirmation, err := ReceiveBatchConfirmation(c.conn)
+	c.conn.Close()
+	if err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return false
+	}
+
+	log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
+		confirmation, len(batch))
+	return true
+}
+
+// sendBatches lee el CSV de a chunks y envía cada batch al servidor
+// En ningún momento hay más de BatchMaxAmount apuestas en memoria
+func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
 	file, err := os.Open(csvPath)
 	if err != nil {
-		return nil, err
+		log.Errorf("action: read_csv | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return false
 	}
 	defer file.Close()
 
-	// Leer todas las filas del CSV
 	reader := csv.NewReader(file)
-	rows, err := reader.ReadAll()
-	if err != nil {
-		return nil, err
+	batch := make([]*Bet, 0, c.config.BatchMaxAmount)
+
+	for {
+		// Verificar SIGTERM antes de cada fila
+		select {
+		case <-stopChan:
+			return false
+		default:
+		}
+
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Errorf("action: read_csv | result: fail | client_id: %v | error: %v",
+				c.config.ID, err)
+			return false
+		}
+
+		batch = append(batch, NewBet(c.config.ID, row[0], row[1], row[2], row[3], row[4]))
+
+		// Cuando el batch está lleno, enviarlo
+		if len(batch) == c.config.BatchMaxAmount {
+			if !c.sendOneBatch(batch, stopChan) {
+				return false
+			}
+			batch = batch[:0]
+		}
 	}
 
-	// Convertir cada fila a una Bet
-	bets := make([]*Bet, 0, len(rows))
-	for _, row := range rows {
-		bet := NewBet(c.config.ID, row[0], row[1], row[2], row[3], row[4])
-		bets = append(bets, bet)
+	// Enviar el último batch parcial si quedaron apuestas
+	if len(batch) > 0 {
+		return c.sendOneBatch(batch, stopChan)
 	}
-	return bets, nil
+	return true
 }
 
 // StartClientLoop lee el CSV y envía las apuestas en batches al servidor
@@ -98,54 +152,8 @@ func (c *Client) StartClientLoop(csvPath string) {
 		close(stopChan)
 	}()
 
-	// Leer todas las apuestas del CSV
-	bets, err := c.readBetsFromCSV(csvPath)
-	if err != nil {
-		log.Errorf("action: read_csv | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
+	if !c.sendBatches(csvPath, stopChan) {
 		return
-	}
-
-	// Enviar apuestas en batches
-	for i := 0; i < len(bets); i += c.config.BatchMaxAmount {
-		// Verificar si llegó SIGTERM antes de cada batch
-		select {
-		case <-stopChan:
-			return
-		default:
-		}
-
-		// Calcular el fin del batch actual
-		end := i + c.config.BatchMaxAmount
-		if end > len(bets) {
-			end = len(bets)
-		}
-		batch := bets[i:end]
-
-		// Conectar y enviar el batch
-		if err := c.createClientSocket(stopChan); err != nil {
-			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
-			return
-		}
-
-		if err := SendBatch(c.conn, batch); err != nil {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID, err)
-			c.conn.Close()
-			return
-		}
-
-		// Esperar confirmación del servidor
-		confirmation, err := ReceiveBatchConfirmation(c.conn)
-		c.conn.Close()
-		if err != nil {
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID, err)
-			return
-		}
-
-		log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
-			confirmation, len(batch))
 	}
 
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
