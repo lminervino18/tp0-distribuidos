@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -32,9 +33,7 @@ func NewClient(config ClientConfig) *Client {
 	return &Client{config: config}
 }
 
-// CreateClientSocket Initializes client socket. In case of
-// failure, error is printed in stdout/stderr and exit 1
-// is returned
+// createClientSocket Initializes client socket, retrying until success or shutdown
 func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	for {
 		conn, err := net.Dial("tcp", c.config.ServerAddress)
@@ -55,8 +54,8 @@ func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	}
 }
 
-// StartClientLoop Send messages to the client until some time threshold is met
-func (c *Client) StartClientLoop() {
+// StartClientLoop connects to the server, sends a bet and waits for confirmation
+func (c *Client) StartClientLoop(bet *Bet) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM)
 
@@ -72,34 +71,31 @@ func (c *Client) StartClientLoop() {
 		close(stopChan)
 	}()
 
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		if err := c.createClientSocket(stopChan); err != nil {
-			return
-		}
+	if err := c.createClientSocket(stopChan); err != nil {
+		return
+	}
+	defer c.conn.Close()
 
-		fmt.Fprintf(
-			c.conn,
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		)
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
-		c.conn.Close()
+	// Enviar la apuesta al servidor
+	if err := SendBet(c.conn, bet); err != nil {
+		log.Errorf("action: send_bet | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
 		return
 	}
 
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		select {
-		case <-time.After(c.config.LoopPeriod):
-		case <-stopChan:
-			return
-		}
+	// Esperar confirmación del servidor
+	confirmation, err := ReceiveConfirmation(c.conn)
+	if err != nil {
+		log.Errorf("action: receive_confirmation | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return
 	}
 
-	log.Infof("action: apuesta_enviada | result: %v | dni: %v | numero: %v",
-		confirmation, bet.Document, bet.Number)
+	if confirmation == "success" {
+		log.Infof("action: apuesta_enviada | result: success | dni: %v | numero: %v",
+			bet.Document, bet.Number)
+	} else {
+		log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v",
+			bet.Document, bet.Number)
+	}
 }
