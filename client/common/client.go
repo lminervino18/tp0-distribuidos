@@ -149,7 +149,9 @@ func (c *Client) StartClientLoop(csvPath string) {
 	}
 
 	// Notificar al servidor que terminamos de enviar apuestas
-	c.createClientSocket()
+	if err := c.createClientSocket(stopChan); err != nil {
+		return
+	}
 	if err := SendFin(c.conn, c.config.ID); err != nil {
 		log.Errorf("action: notify_fin | result: fail | client_id: %v | error: %v",
 			c.config.ID, err)
@@ -159,7 +161,9 @@ func (c *Client) StartClientLoop(csvPath string) {
 	c.conn.Close()
 
 	// Consultar ganadores — el servidor bloquea hasta tener las 5 agencias
-	c.createClientSocket()
+	if err := c.createClientSocket(stopChan); err != nil {
+		return
+	}
 	if err := SendQuery(c.conn, c.config.ID); err != nil {
 		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
 			c.config.ID, err)
