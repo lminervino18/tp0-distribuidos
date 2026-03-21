@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/csv"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -34,8 +35,8 @@ func NewClient(config ClientConfig) *Client {
 	return &Client{config: config}
 }
 
-// createClientSocket Initializes client socket retrying until success
-func (c *Client) createClientSocket() error {
+// createClientSocket Initializes client socket, retrying until success or shutdown
+func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	for {
 		conn, err := net.Dial("tcp", c.config.ServerAddress)
 		if err == nil {
@@ -47,7 +48,11 @@ func (c *Client) createClientSocket() error {
 			c.config.ID,
 			err,
 		)
-		time.Sleep(1 * time.Second)
+		select {
+		case <-time.After(1 * time.Second):
+		case <-stopChan:
+			return fmt.Errorf("shutdown requested")
+		}
 	}
 }
 
@@ -79,13 +84,10 @@ func (c *Client) readBetsFromCSV(csvPath string) ([]*Bet, error) {
 func (c *Client) StartClientLoop(csvPath string) {
 	// Canal para recibir señales del sistema operativo
 	sigChan := make(chan os.Signal, 1)
-	// Registrar SIGTERM en el canal para graceful shutdown
 	signal.Notify(sigChan, syscall.SIGTERM)
 
-	// Canal para notificar al loop principal que debe terminar
 	stopChan := make(chan struct{})
 
-	// Goroutine que espera SIGTERM en paralelo al loop principal
 	go func() {
 		<-sigChan
 		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
@@ -121,7 +123,11 @@ func (c *Client) StartClientLoop(csvPath string) {
 		batch := bets[i:end]
 
 		// Conectar y enviar el batch
-		c.createClientSocket()
+		if err := c.createClientSocket(stopChan); err != nil {
+			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+			return
+		}
+
 		if err := SendBatch(c.conn, batch); err != nil {
 			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
 				c.config.ID, err)

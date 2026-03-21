@@ -16,7 +16,6 @@ TOTAL_AGENCIES = int(os.getenv('TOTAL_AGENCIES', 5))
 
 class Server:
     def __init__(self, port, listen_backlog):
-        # Initialize server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
@@ -34,10 +33,6 @@ class Server:
         signal.signal(signal.SIGTERM, self.__handle_sigterm)
 
     def __handle_sigterm(self, sig, frame):
-        """
-        Handle SIGTERM signal for graceful shutdown.
-        Closes the server socket and stops the main loop.
-        """
         logging.info('action: receive_sigterm | result: success')
         self._running = False
         self._server_socket.close()
@@ -161,13 +156,6 @@ class Server:
         ]
 
     def __accept_new_connection(self):
-        """
-        Accept new connections
-
-        Function blocks until a connection to a client is made.
-        Then connection created is printed and returned
-        """
-        # Connection arrived
         logging.info('action: accept_connections | result: in_progress')
         c, addr = self._server_socket.accept()
         logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
