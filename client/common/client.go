@@ -40,7 +40,7 @@ func NewClient(config ClientConfig) *Client {
 // CreateClientSocket Initializes client socket. In case of
 // failure, error is printed in stdout/stderr and exit 1
 // is returned
-func (c *Client) createClientSocket() error {
+func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	for {
 		conn, err := net.Dial("tcp", c.config.ServerAddress)
 		if err == nil {
@@ -52,39 +52,36 @@ func (c *Client) createClientSocket() error {
 			c.config.ID,
 			err,
 		)
-		time.Sleep(1 * time.Second)
+		select {
+		case <-time.After(1 * time.Second):
+		case <-stopChan:
+			return fmt.Errorf("shutdown requested")
+		}
 	}
 }
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop() {
-	// Canal para recibir señales del sistema operativo
 	sigChan := make(chan os.Signal, 1)
-	// Registrar SIGTERM en el canal para graceful shutdown
 	signal.Notify(sigChan, syscall.SIGTERM)
 
-	// Canal para notificar al loop principal que debe terminar
 	stopChan := make(chan struct{})
 
-	// Goroutine que espera SIGTERM en paralelo al loop principal
 	go func() {
-		<-sigChan // bloquea hasta recibir SIGTERM
+		<-sigChan
 		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
 		if c.conn != nil {
 			c.conn.Close()
 			log.Infof("action: close_connection | result: success | client_id: %v", c.config.ID)
 		}
-		// Notifica al loop principal para interrumpir el sleep
 		close(stopChan)
 	}()
 
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		// Create the connection the server in every loop iteration. Send an
-		c.createClientSocket()
+		if err := c.createClientSocket(stopChan); err != nil {
+			return
+		}
 
-		// TODO: Modify the send to avoid short-write
 		fmt.Fprintf(
 			c.conn,
 			"[CLIENT %v] Message N°%v\n",
@@ -107,13 +104,9 @@ func (c *Client) StartClientLoop() {
 			msg,
 		)
 
-		// Wait a time between sending one message and the next one
-		// Usa select para poder interrumpir el sleep si llega SIGTERM
 		select {
 		case <-time.After(c.config.LoopPeriod):
-			// tiempo normal de espera
 		case <-stopChan:
-			// llegó SIGTERM, terminar el loop limpiamente
 			return
 		}
 	}
