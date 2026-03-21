@@ -18,7 +18,6 @@ TOTAL_AGENCIES = int(os.getenv('TOTAL_AGENCIES', 5))
 
 class Server:
     def __init__(self, port, listen_backlog):
-        # Initialize server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
