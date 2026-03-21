@@ -123,7 +123,11 @@ func (c *Client) StartClientLoop(csvPath string) {
 		batch := bets[i:end]
 
 		// Conectar y enviar el batch
-		c.createClientSocket()
+		if err := c.createClientSocket(stopChan); err != nil {
+			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+			return
+		}
+
 		if err := SendBatch(c.conn, batch); err != nil {
 			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
 				c.config.ID, err)
