@@ -35,6 +35,6 @@ La respuesta del servidor con los ganadores usa el formato:
 ### Implementación
 Cada cliente al terminar de enviar todos sus batches abre una conexión nueva y envía `MSG_FIN` con su agency_id. Luego abre otra conexión y envía `MSG_QUERY` quedando bloqueado esperando la respuesta.
 
-El servidor mantiene una **cola de conexiones pendientes** (`_pending_queries`) — cuando una agencia consulta antes del sorteo, el servidor no responde ni cierra la conexión, sino que la guarda en la cola. Cuando llega el último `MSG_FIN` (la agencia N), el servidor realiza el sorteo y responde a todas las conexiones pendientes antes de aceptar nuevas. Esto garantiza que ninguna agencia recibe información parcial.
+El servidor mantiene una **cola de conexiones pendientes** (`_pending_queries`) — cuando una agencia consulta antes del sorteo, el servidor no responde ni cierra la conexión, sino que la guarda en la cola. Cuando llega el último `MSG_FIN` (la agencia N), el servidor realiza el sorteo y responde a todas las conexiones pendientes antes de aceptar nuevas. Si el sorteo ya fue realizado cuando llega el `MSG_QUERY`, el servidor responde inmediatamente sin encolar la conexión. Esto garantiza que ninguna agencia recibe información parcial.
 
 El número de agencias esperadas es configurable mediante la variable de entorno `TOTAL_AGENCIES` que es obtenida por la cantidad de clientes.
