@@ -45,7 +45,7 @@ func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 			return nil
 		}
 		log.Warningf(
-			"action: connect | result: fail | client_id: %v | error: %v",
+			"action: connect | result: in_progress | client_id: %v | error: %v",
 			c.config.ID,
 			err,
 		)
