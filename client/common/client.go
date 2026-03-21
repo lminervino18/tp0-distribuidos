@@ -32,8 +32,10 @@ func NewClient(config ClientConfig) *Client {
 	return &Client{config: config}
 }
 
-// createClientSocket Initializes client socket retrying until success
-func (c *Client) createClientSocket() error {
+// CreateClientSocket Initializes client socket. In case of
+// failure, error is printed in stdout/stderr and exit 1
+// is returned
+func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	for {
 		conn, err := net.Dial("tcp", c.config.ServerAddress)
 		if err == nil {
@@ -45,21 +47,21 @@ func (c *Client) createClientSocket() error {
 			c.config.ID,
 			err,
 		)
-		time.Sleep(1 * time.Second)
+		select {
+		case <-time.After(1 * time.Second):
+		case <-stopChan:
+			return fmt.Errorf("shutdown requested")
+		}
 	}
 }
 
-// StartClientLoop sends a bet to the server and waits for confirmation
-func (c *Client) StartClientLoop(bet *Bet) {
-	// Canal para recibir señales del sistema operativo
+// StartClientLoop Send messages to the client until some time threshold is met
+func (c *Client) StartClientLoop() {
 	sigChan := make(chan os.Signal, 1)
-	// Registrar SIGTERM en el canal para graceful shutdown
 	signal.Notify(sigChan, syscall.SIGTERM)
 
-	// Canal para notificar al loop principal que debe terminar
 	stopChan := make(chan struct{})
 
-	// Goroutine que espera SIGTERM en paralelo al loop principal
 	go func() {
 		<-sigChan
 		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
@@ -70,24 +72,32 @@ func (c *Client) StartClientLoop(bet *Bet) {
 		close(stopChan)
 	}()
 
-	// Conectar al servidor y enviar la apuesta
-	c.createClientSocket()
+	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
+		if err := c.createClientSocket(stopChan); err != nil {
+			return
+		}
 
-	if err := SendBet(c.conn, bet); err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
+		fmt.Fprintf(
+			c.conn,
+			"[CLIENT %v] Message N°%v\n",
+			c.config.ID,
+			msgID,
+		)
+		msg, err := bufio.NewReader(c.conn).ReadString('\n')
 		c.conn.Close()
 		return
 	}
 
-	// Esperar confirmación del servidor
-	confirmation, err := ReceiveConfirmation(c.conn)
-	c.conn.Close()
+		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
+			c.config.ID,
+			msg,
+		)
 
-	if err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
-		return
+		select {
+		case <-time.After(c.config.LoopPeriod):
+		case <-stopChan:
+			return
+		}
 	}
 
 	log.Infof("action: apuesta_enviada | result: %v | dni: %v | numero: %v",
