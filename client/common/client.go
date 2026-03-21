@@ -80,7 +80,7 @@ func (c *Client) readBetsFromCSV(csvPath string) ([]*Bet, error) {
 
 // sendBatches envía todas las apuestas en batches al servidor
 // Retorna false si se recibió SIGTERM durante el envío
-func (c *Client) sendBatches(bets []*Bet, stopChan chan struct{}) bool {
+func (c *Client) sendBatches(bets []*Bet, stopChan <-chan struct{}) bool {
 	for i := 0; i < len(bets); i += c.config.BatchMaxAmount {
 		select {
 		case <-stopChan:
@@ -94,7 +94,11 @@ func (c *Client) sendBatches(bets []*Bet, stopChan chan struct{}) bool {
 		}
 		batch := bets[i:end]
 
-		c.createClientSocket()
+		if err := c.createClientSocket(stopChan); err != nil {
+			log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
+			return false
+		}
+
 		if err := SendBatch(c.conn, batch); err != nil {
 			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
 				c.config.ID, err)
@@ -117,8 +121,10 @@ func (c *Client) sendBatches(bets []*Bet, stopChan chan struct{}) bool {
 }
 
 // notifyFin notifica al servidor que terminamos de enviar apuestas
-func (c *Client) notifyFin() error {
-	c.createClientSocket()
+func (c *Client) notifyFin(stopChan <-chan struct{}) error {
+	if err := c.createClientSocket(stopChan); err != nil {
+		return err
+	}
 	if err := SendFin(c.conn, c.config.ID); err != nil {
 		log.Errorf("action: notify_fin | result: fail | client_id: %v | error: %v",
 			c.config.ID, err)
@@ -130,8 +136,10 @@ func (c *Client) notifyFin() error {
 }
 
 // queryWinners consulta los ganadores al servidor y loguea el resultado
-func (c *Client) queryWinners() error {
-	c.createClientSocket()
+func (c *Client) queryWinners(stopChan <-chan struct{}) error {
+	if err := c.createClientSocket(stopChan); err != nil {
+		return err
+	}
 	if err := SendQuery(c.conn, c.config.ID); err != nil {
 		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
 			c.config.ID, err)
@@ -181,9 +189,9 @@ func (c *Client) StartClientLoop(csvPath string) {
 		return
 	}
 
-	if err := c.notifyFin(); err != nil {
+	if err := c.notifyFin(stopChan); err != nil {
 		return
 	}
 
-	c.queryWinners()
+	c.queryWinners(stopChan)
 }

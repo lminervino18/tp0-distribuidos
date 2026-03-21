@@ -12,7 +12,6 @@ from common.protocol import (
 )
 from common.utils import Bet, store_bets, load_bets, has_won
 
-# Total de agencias esperadas — configurable por variable de entorno
 TOTAL_AGENCIES = int(os.getenv('TOTAL_AGENCIES', 5))
 
 
@@ -23,11 +22,8 @@ class Server:
         self._server_socket.listen(listen_backlog)
         self._running = True
 
-        # Conjunto de agencias que notificaron fin
         self._finished_agencies = set()
-        # Indica si el sorteo ya fue realizado
         self._lottery_done = False
-        # Cola de conexiones pendientes que consultaron antes del sorteo
         self._pending_queries = {}
 
         # Lock global para proteger todo el estado compartido entre threads
@@ -36,14 +32,9 @@ class Server:
         # Pool de threads para manejar conexiones en paralelo
         self._executor = ThreadPoolExecutor(max_workers=listen_backlog)
 
-        # Registrar handler de SIGTERM para graceful shutdown
         signal.signal(signal.SIGTERM, self.__handle_sigterm)
 
     def __handle_sigterm(self, sig, frame):
-        """
-        Handle SIGTERM signal for graceful shutdown.
-        Cierra el server socket, detiene el pool y termina el loop.
-        """
         logging.info('action: receive_sigterm | result: success')
         self._running = False
         self._executor.shutdown(wait=False)
@@ -118,34 +109,32 @@ class Server:
         """
         agency_id = receive_agency_id(client_sock)
 
+        pending_to_resolve = None
         with self._lock:
             self._finished_agencies.add(agency_id)
             logging.info(f'action: fin_recibido | result: success | agency_id: {agency_id} | total: {len(self._finished_agencies)}')
 
             if len(self._finished_agencies) == TOTAL_AGENCIES:
-                self.__resolve_lottery()
+                self._lottery_done = True
+                logging.info('action: sorteo | result: success')
+                # Preparar lista de (agency_id, sock, winners) dentro del lock
+                pending_to_resolve = [
+                    (pid, psock, self.__get_winners(pid))
+                    for pid, psock in self._pending_queries.items()
+                ]
+                self._pending_queries.clear()
 
-    def __resolve_lottery(self):
-        """
-        Realiza el sorteo y responde a todas las conexiones pendientes.
-        Debe llamarse dentro del lock.
-        """
-        self._lottery_done = True
-        logging.info('action: sorteo | result: success')
-
-        pending = list(self._pending_queries.items())
-        self._pending_queries.clear()
-
-        for pending_agency_id, pending_sock in pending:
-            try:
-                winners = self.__get_winners(pending_agency_id)
-                send_winners(pending_sock, winners)
-                logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
-            except OSError as e:
-                logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
-            finally:
-                pending_sock.close()
-                logging.info('action: close_client_socket | result: success')
+        # Enviar fuera del lock para no bloquear otros threads
+        if pending_to_resolve:
+            for pending_agency_id, pending_sock, winners in pending_to_resolve:
+                try:
+                    send_winners(pending_sock, winners)
+                    logging.info(f'action: ganadores_enviados | result: success | agency_id: {pending_agency_id} | cant_ganadores: {len(winners)}')
+                except OSError as e:
+                    logging.error(f'action: ganadores_enviados | result: fail | agency_id: {pending_agency_id} | error: {e}')
+                finally:
+                    pending_sock.close()
+                    logging.info('action: close_client_socket | result: success')
 
     def __handle_query(self, client_sock):
         """
@@ -156,19 +145,22 @@ class Server:
         agency_id = receive_agency_id(client_sock)
 
         with self._lock:
-            if self._lottery_done:
-                try:
-                    winners = self.__get_winners(agency_id)
-                    send_winners(client_sock, winners)
-                    logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
-                except OSError as e:
-                    logging.error(f'action: ganadores_enviados | result: fail | agency_id: {agency_id} | error: {e}')
-                finally:
-                    client_sock.close()
-                    logging.info('action: close_client_socket | result: success')
-            else:
+            if not self._lottery_done:
                 logging.info(f'action: consulta_ganadores | result: in_progress | agency_id: {agency_id}')
                 self._pending_queries[agency_id] = client_sock
+                return
+            # Calcular winners dentro del lock — load_bets no es thread-safe
+            winners = self.__get_winners(agency_id)
+
+        # Enviar fuera del lock
+        try:
+            send_winners(client_sock, winners)
+            logging.info(f'action: ganadores_enviados | result: success | agency_id: {agency_id} | cant_ganadores: {len(winners)}')
+        except OSError as e:
+            logging.error(f'action: ganadores_enviados | result: fail | agency_id: {agency_id} | error: {e}')
+        finally:
+            client_sock.close()
+            logging.info('action: close_client_socket | result: success')
 
     def __get_winners(self, agency_id):
         """
