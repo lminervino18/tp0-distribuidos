@@ -3,7 +3,6 @@ import socket
 import logging
 import signal
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 from common.protocol import (
     MSG_BATCH, MSG_FIN, MSG_QUERY,
@@ -29,15 +28,11 @@ class Server:
         # Lock global para proteger todo el estado compartido entre threads
         self._lock = threading.Lock()
 
-        # Pool de threads para manejar conexiones en paralelo
-        self._executor = ThreadPoolExecutor(max_workers=listen_backlog)
-
         signal.signal(signal.SIGTERM, self.__handle_sigterm)
 
     def __handle_sigterm(self, sig, frame):
         logging.info('action: receive_sigterm | result: success')
         self._running = False
-        self._executor.shutdown(wait=False)
         self._server_socket.close()
         logging.info('action: close_server_socket | result: success')
 
@@ -45,13 +40,15 @@ class Server:
         """
         Server loop
 
-        Acepta conexiones y las despacha al pool de threads.
+        Acepta conexiones y las despacha a threads individuales.
         El loop principal solo acepta — no bloquea procesando mensajes.
         """
         while self._running:
             try:
                 client_sock = self.__accept_new_connection()
-                self._executor.submit(self.__handle_client_connection, client_sock)
+                thread = threading.Thread(target=self.__handle_client_connection, args=(client_sock,))
+                thread.daemon = True
+                thread.start()
             except OSError as e:
                 if self._running:
                     logging.error(f'action: accept_connections | result: fail | error: {e}')
@@ -61,7 +58,7 @@ class Server:
     def __handle_client_connection(self, client_sock):
         """
         Lee el tipo de mensaje y despacha al handler correspondiente.
-        Se ejecuta en un thread del pool.
+        Se ejecuta en un thread dedicado.
         Las conexiones de consulta pendientes no se cierran acá —
         se cierran cuando el sorteo esté listo.
         """
