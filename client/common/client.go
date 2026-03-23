@@ -136,21 +136,27 @@ func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
 
 // StartClientLoop lee el CSV y envía las apuestas en batches al servidor
 func (c *Client) StartClientLoop(csvPath string) {
-	// Canal para recibir señales del sistema operativo
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM)
 
 	stopChan := make(chan struct{})
+	done := make(chan struct{})
 
 	go func() {
-		<-sigChan
-		log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
-		if c.conn != nil {
-			c.conn.Close()
-			log.Infof("action: close_connection | result: success | client_id: %v", c.config.ID)
+		select {
+		case <-sigChan:
+			log.Infof("action: receive_sigterm | result: success | client_id: %v", c.config.ID)
+			if c.conn != nil {
+				c.conn.Close()
+				log.Infof("action: close_connection | result: success | client_id: %v", c.config.ID)
+			}
+			close(stopChan)
+		case <-done:
+			// loop terminó normalmente, salir
 		}
-		close(stopChan)
 	}()
+
+	defer close(done)
 
 	if !c.sendBatches(csvPath, stopChan) {
 		return
