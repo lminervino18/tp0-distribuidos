@@ -33,11 +33,16 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         try:
-            fields_list = receive_batch(client_sock)
-            bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
-            store_bets(bets)
-            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
-            send_confirmation(client_sock, 'success')
+            while True:
+                try:
+                    fields_list = receive_batch(client_sock)
+                except OSError:
+                    # cliente cerró la conexión — fin normal
+                    break
+                bets = [Bet(f[0], f[1], f[2], f[3], f[4], f[5]) for f in fields_list]
+                store_bets(bets)
+                logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(bets)}')
+                send_confirmation(client_sock, 'success')
         except OSError as e:
             logging.error(f'action: apuesta_recibida | result: fail | cantidad: 0 | error: {e}')
             try:
