@@ -23,6 +23,7 @@ class Server:
 
         self._finished_agencies = set()
         self._lottery_done = False
+        # agency_id -> client_sock para queries pendientes del sorteo
         self._pending_queries = {}
 
         # Lock global para proteger todo el estado compartido entre threads
@@ -57,27 +58,35 @@ class Server:
 
     def __handle_client_connection(self, client_sock):
         """
-        Lee el tipo de mensaje y despacha al handler correspondiente.
-        Se ejecuta en un thread dedicado.
-        Las conexiones de consulta pendientes no se cierran acá —
-        se cierran cuando el sorteo esté listo.
+        Loopea leyendo mensajes de la misma conexión. Se ejecuta en un thread dedicado.
+        Los batches vienen todos por una sola conexión persistente.
+        FIN y QUERY vienen en conexiones separadas de un solo mensaje.
         """
         try:
-            msg_type = receive_message_type(client_sock)
+            while True:
+                try:
+                    msg_type = receive_message_type(client_sock)
+                except OSError:
+                    # cliente cerró la conexión — fin normal de batches
+                    client_sock.close()
+                    logging.info('action: close_client_socket | result: success')
+                    return
 
-            if msg_type == MSG_BATCH:
-                self.__handle_batch(client_sock)
-                client_sock.close()
-                logging.info('action: close_client_socket | result: success')
-            elif msg_type == MSG_FIN:
-                self.__handle_fin(client_sock)
-                client_sock.close()
-                logging.info('action: close_client_socket | result: success')
-            elif msg_type == MSG_QUERY:
-                self.__handle_query(client_sock)
-            else:
-                logging.error(f'action: receive_message | result: fail | error: unknown type {msg_type}')
-                client_sock.close()
+                if msg_type == MSG_BATCH:
+                    self.__handle_batch(client_sock)
+                elif msg_type == MSG_FIN:
+                    self.__handle_fin(client_sock)
+                    client_sock.close()
+                    logging.info('action: close_client_socket | result: success')
+                    return
+                elif msg_type == MSG_QUERY:
+                    # query handler gestiona el cierre del socket
+                    self.__handle_query(client_sock)
+                    return
+                else:
+                    logging.error(f'action: receive_message | result: fail | error: unknown type {msg_type}')
+                    client_sock.close()
+                    return
 
         except OSError as e:
             logging.error(f'action: receive_message | result: fail | error: {e}')
