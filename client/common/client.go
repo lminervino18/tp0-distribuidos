@@ -57,36 +57,16 @@ func (c *Client) createClientSocket(stopChan <-chan struct{}) error {
 	}
 }
 
-// sendOneBatch conecta al servidor, envía un batch y espera confirmación
-func (c *Client) sendOneBatch(batch []*Bet, stopChan <-chan struct{}) bool {
+// sendBatches abre una única conexión, lee el CSV de a chunks y envía cada batch
+// En ningún momento hay más de BatchMaxAmount apuestas en memoria
+func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
+	// Abrir conexión persistente para toda la transmisión de batches
 	if err := c.createClientSocket(stopChan); err != nil {
 		log.Errorf("action: connect | result: fail | client_id: %v | error: %v", c.config.ID, err)
 		return false
 	}
+	defer c.conn.Close()
 
-	if err := SendBatch(c.conn, batch); err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
-		c.conn.Close()
-		return false
-	}
-
-	confirmation, err := ReceiveBatchConfirmation(c.conn)
-	c.conn.Close()
-	if err != nil {
-		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-			c.config.ID, err)
-		return false
-	}
-
-	log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
-		confirmation, len(batch))
-	return true
-}
-
-// sendBatches lee el CSV de a chunks y envía cada batch al servidor
-// En ningún momento hay más de BatchMaxAmount apuestas en memoria
-func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
 	file, err := os.Open(csvPath)
 	if err != nil {
 		log.Errorf("action: read_csv | result: fail | client_id: %v | error: %v",
@@ -120,7 +100,7 @@ func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
 
 		// Cuando el batch está lleno, enviarlo
 		if len(batch) == c.config.BatchMaxAmount {
-			if !c.sendOneBatch(batch, stopChan) {
+			if !c.sendOneBatch(batch) {
 				return false
 			}
 			batch = batch[:0]
@@ -129,8 +109,28 @@ func (c *Client) sendBatches(csvPath string, stopChan <-chan struct{}) bool {
 
 	// Enviar el último batch parcial si quedaron apuestas
 	if len(batch) > 0 {
-		return c.sendOneBatch(batch, stopChan)
+		return c.sendOneBatch(batch)
 	}
+	return true
+}
+
+// sendOneBatch envía un batch por la conexión ya establecida y espera confirmación
+func (c *Client) sendOneBatch(batch []*Bet) bool {
+	if err := SendBatch(c.conn, batch); err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return false
+	}
+
+	confirmation, err := ReceiveBatchConfirmation(c.conn)
+	if err != nil {
+		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
+			c.config.ID, err)
+		return false
+	}
+
+	log.Infof("action: apuesta_enviada | result: %v | cantidad: %v",
+		confirmation, len(batch))
 	return true
 }
 
