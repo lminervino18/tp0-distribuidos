@@ -45,4 +45,6 @@ Donde cada apuesta mantiene el mismo formato que antes:
 
 El tamaño máximo del batch es configurable desde `config.yaml` con la clave `batch.maxAmount`. El valor por defecto es 100 apuestas, lo que garantiza que los paquetes no superen los 8kB (~70 bytes por apuesta × 100 = ~7kB).
 
+El cliente mantiene una única conexión TCP durante toda la transmisión de batches, evitando el overhead del handshake por cada mensaje. El servidor lee batches en loop sobre esa misma conexión hasta que el cliente la cierra al terminar.
+
 Los archivos CSV de cada agencia se inyectan como volúmenes en los containers correspondientes siguiendo la convención `.data/agency-{N}.csv`.
